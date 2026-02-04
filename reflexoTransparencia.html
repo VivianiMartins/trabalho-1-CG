@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+
+    <script type="text/javascript" src="Common/MV.js"></script>
+    <script type="text/javascript" src="Common/initShaders.js"></script>
+
+    <script type="vertex" id="vs-objects">
+        #version 300 es
+
+        in vec4 aPosition;
+        in vec3 aNormal;
+        in vec2 aTexCoord;
+
+        uniform mat4 uModelMatrix;
+        uniform mat4 uViewMatrix;
+        uniform mat4 uProjectionMatrix;
+
+        out vec3 vNormal;
+        out vec3 vWorldPos;
+        out vec2 vTexCoord;
+
+        void main() {
+            // Calcula a posição no mundo para iluminação e clipping
+            vec4 worldPosition = uModelMatrix * aPosition;
+            vWorldPos = worldPosition.xyz;
+
+            // Transforma a normal para o espaço do mundo (sem escala não uniforme)
+            vec3 N = mat3(uModelMatrix) * aNormal;
+            vNormal = normalize(N);
+
+            vTexCoord = aTexCoord;
+
+            // Posição final na tela: Projeção * Visão * Mundo
+            gl_Position = uProjectionMatrix * uViewMatrix * worldPosition;
+        }
+    </script>
+
+    <script type="fragment" id="fs-objects">
+        #version 300 es
+        precision highp float;
+
+        in vec3 vNormal;
+        in vec3 vWorldPos;
+        in vec2 vTexCoord;
+
+        uniform vec3 uCameraPosition;
+        uniform vec3 uLightPosition;
+        uniform vec3 uAmbientColor;
+        uniform vec3 uDiffuseColor;
+        uniform vec3 uSpecularColor;
+        uniform float uShininess;
+
+        // [REQUISITO 4] Textura padrão em todos os objetos
+        uniform sampler2D uMainTextureSampler;
+
+        // [REQUISITO 5] Utilizar Clipping plane no Shader
+        uniform bool uUseClipping;
+        uniform vec4 uClipPlane;
+
+        out vec4 finalFragmentColor;
+
+        void main() {
+            // Plano de Corte: Se o pixel estiver atrás do plano (espelho), ele não é desenhado
+            // [REQUISITO 5] Implementação do recorte no fragment shader
+            if (uUseClipping) {
+                float clipDistance = dot(uClipPlane.xyz, vWorldPos) + uClipPlane.w;
+                if (clipDistance < 0.0) {
+                    discard;
+                }
+            }
+
+            // Vetores de iluminação
+            vec3 N = normalize(vNormal);
+            vec3 V = normalize(uCameraPosition - vWorldPos);
+            vec3 L = normalize(uLightPosition - vWorldPos);
+
+            // Luz Ambiente
+            vec3 ambient = uAmbientColor;
+
+            // Luz Difusa (Lambert)
+            float diffFactor = max(dot(N, L), 0.0);
+            vec3 diffuse = uDiffuseColor * diffFactor;
+
+            // Luz Especular (Phong)
+            vec3 R = reflect(-L, N);
+            float specFactor = pow(max(dot(V, R), 0.0), uShininess);
+            vec3 specular = uSpecularColor * specFactor;
+
+            // Combinação da Textura com a luz
+            vec4 texColor = texture(uMainTextureSampler, vTexCoord);
+            vec3 lighting = (ambient + diffuse) * texColor.rgb + specular;
+
+            finalFragmentColor = vec4(lighting, 1.0);
+        }
+    </script>
+
+    <script type="vertex" id="vs-mirror">
+        #version 300 es
+
+        in vec4 aPosition;
+        in vec3 aNormal;
+        in vec2 aTexCoord;
+
+        uniform mat4 uModelMatrix;
+        uniform mat4 uViewMatrix;
+        uniform mat4 uProjectionMatrix;
+
+        out vec3 vNormal;
+        out vec3 vWorldPos;
+        out vec2 vTexCoord;
+
+        void main() {
+            vec4 worldPosition = uModelMatrix * aPosition;
+            vWorldPos = worldPosition.xyz;
+            vNormal = mat3(uModelMatrix) * aNormal;
+            vTexCoord = aTexCoord;
+
+            gl_Position = uProjectionMatrix * uViewMatrix * worldPosition;
+        }
+    </script>
+
+    <script type="fragment" id="fs-mirror">
+        #version 300 es
+        precision highp float;
+
+        in vec3 vNormal;
+        in vec3 vWorldPos;
+        in vec2 vTexCoord;
+
+        uniform vec3 uCameraPosition;
+        uniform vec3 uLightPosition;
+        uniform vec3 uSpecularColor;
+
+        // [REQUISITO 3] Transparência ajustável por meio de um uniform
+        uniform float uTransparencyLevel;
+
+        // [REQUISITO 4] O vidro também possui textura padrão ("sujeira")
+        uniform sampler2D uMainTextureSampler;
+
+        // [REQUISITO 2] Reflexo via Framebuffer (Render-to-Texture)
+        uniform sampler2D uMirrorTextureSampler;
+        uniform vec2 uScreenResolution;
+
+        out vec4 finalFragmentColor;
+
+        void main() {
+            // Calcula as coordenadas UV baseadas na posição da tela para projetar o reflexo
+            vec2 screenUV = gl_FragCoord.xy / uScreenResolution;
+
+            // Inverte o X para simular o comportamento real de um espelho
+            vec2 reflectionUV = vec2(1.0 - screenUV.x, screenUV.y);
+
+            vec3 N = normalize(vNormal);
+            vec3 V = normalize(uCameraPosition - vWorldPos);
+            vec3 L = normalize(uLightPosition - vWorldPos);
+
+            if (gl_FrontFacing) {
+                // Amostra a textura capturada pela câmera de reflexo
+                vec4 mirrorColor = texture(uMirrorTextureSampler, reflectionUV) * 1.2;
+                // Amostra a textura de "sujeira/vidro" do plano
+                vec4 glassTexture = texture(uMainTextureSampler, vTexCoord);
+
+                // Efeito Fresnel: Reflete mais conforme o ângulo de visão fica raso
+                // [REQUISITO 1] Calcular reflexão/transparência com base no ângulo de visão
+                float fresnel = pow(1.0 - max(dot(V, N), 0.0), 1.5);
+                float reflectionStrength = clamp(0.4 + fresnel * 0.6, 0.0, 1.0);
+
+                // Brilho especular no vidro
+                vec3 H = normalize(L + V);
+                float spec = pow(max(dot(N, H), 0.0), 256.0);
+                vec3 specular = uSpecularColor * spec * 0.5;
+
+                // Mistura a cor do vidro com o reflexo e adiciona o brilho
+                vec3 finalRGB = mix(glassTexture.rgb, mirrorColor.rgb, reflectionStrength) + specular;
+
+                // [REQUISITO 3] Aplica a transparência controlada pelo uniform
+                float finalAlpha = clamp(uTransparencyLevel + (fresnel * 0.6), 0.0, 1.0);
+
+                finalFragmentColor = vec4(finalRGB, finalAlpha);
+            }
+            else {
+                // Cor sólida para o lado de trás do espelho
+                finalFragmentColor = vec4(0.3, 0.3, 0.5, 1.0);
+            }
+        }
+    </script>
+</head>
+
+<body style="margin: 0; overflow: hidden; background-color: #000;">
+<canvas id="gl-canvas"></canvas>
+
+<div style="position: absolute; top: 10px; left: 10px; color: white; font-family: sans-serif; pointer-events: none; background-color: rgb(57, 52, 50); padding: 10px; border-radius: 8px; ">
+    <b>Controles câmera:</b><br>
+    <span style="color: cyan;">W / S</span> -> Frente/Trás <br>
+    <span style="color: cyan;">A / D</span> -> Esquerda/ Direita<br>
+    <span style="color: cyan;">Q / E</span> -> Subir/Descer <br>
+    Mouse -> Olhar (Clique para travar) <br>
+    <hr style="opacity: 0.5;">
+    <span style="color: lime;">Setas (↑ ↓ ← →)</span> -> Mover Cubo<br>
+    <hr style="opacity: 0.5;">
+    <label for="alphaSlider" style="pointer-events: auto;">
+        Opacidade Vidro: <span id="valDisplay" style="color: yellow;">40%</span>
+    </label><br>
+    <input type="range" id="alphaSlider" min="0.0" max="1.0" step="0.01" value="0.4" style="pointer-events: auto; width: 100%;">
+</div>
+
+<img id="tex-cubo-pedra" src="resources/freepbr/concrete3-albedo.png" style="display:none;"/>
+<img id="tex-cubo-colorido" src="resources/cube.png" style="display:none;"/>
+<img id="tex-vidro" src="resources/vidro.png" style="display:none;"/>
+
+<script type="text/javascript">
+    // Variáveis Globais de Contexto e Programas
+    let webGLContext;
+    let objectsProgram, mirrorProgram, canvasElement;
+
+    // Localizações de Uniforms - Programa de Objetos
+    let obj_uModelMatrixLoc, obj_uViewMatrixLoc, obj_uProjectionMatrixLoc;
+    let obj_uCameraPosLoc, obj_uMainTextureLoc, obj_uLightPosLoc, obj_uAmbientLightLoc, obj_uDiffuseLightLoc, obj_uSpecularLightLoc, obj_uShininessLoc;
+    let obj_uUseClipLoc, obj_uClipPlaneLoc;
+
+    // Localizações de Uniforms - Programa do Espelho
+    let mir_uModelMatrixLoc, mir_uViewMatrixLoc, mir_uProjectionMatrixLoc, mir_uCameraPosLoc;
+    let mir_uMainTextureLoc, mir_uMirrorTextureLoc, mir_uLightPosLoc, mir_uSpecularLightLoc, mir_uTransparencyLoc;
+    let mir_uScreenResLoc;
+
+    // Estado da Aplicação
+    let currentTransparency = 0.4;
+    let activeKeysState = {};
+    let lastTimestamp = 0;
+
+    let cubeGeometryInfo, glassPlaneGeometryInfo;
+    let textureStoneCube, textureColoredCube, textureGlass;
+
+    // --- POSIÇÕES E CONFIGURAÇÕES ---
+    let movableCubePosition = vec3(0.0, 0.0, 10.0);
+    const CUBE_MOVE_SPEED = 15.0;
+
+    let cameraControl = {
+        pos: vec3(0.0, 0.0, 25.0),
+        pitch: 0.0,
+        yaw: -90.0,
+        speed: 10.0,
+        mouseSensitivity: 0.1
+    };
+
+    const MIRROR_Z_POSITION = 0.0;
+    const lightSettings = {
+        pos: vec3(10.0, 20.0, 30.0),
+        ambient: vec3(0.3, 0.3, 0.3),
+        diffuse: vec3(0.9, 0.9, 0.9),
+        specular: vec3(1.0, 1.0, 1.0),
+        shininess: 60.0
+    };
+
+    // Framebuffer para a textura do espelho (Render-to-Texture)
+    // [REQUISITO 2] Renderizar cena para Framebuffer (não cube map)
+    let mirrorFramebuffer, mirrorColorTexture, mirrorDepthBuffer;
+    const MIRROR_TEXTURE_RESOLUTION = 1024;
+
+    /**
+     * Ponto de entrada: Inicializa o contexto, shaders, geometrias e listeners.
+     */
+    window.onload = function init() {
+        canvasElement = document.getElementById("gl-canvas");
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+
+        webGLContext = canvasElement.getContext("webgl2");
+        if (!webGLContext) { alert("WebGL 2.0 necessário"); return; }
+
+        // Configurações Globais do WebGL
+        webGLContext.enable(webGLContext.DEPTH_TEST);
+        webGLContext.enable(webGLContext.BLEND);
+        webGLContext.blendFunc(webGLContext.SRC_ALPHA, webGLContext.ONE_MINUS_SRC_ALPHA);
+
+        // Compilação dos Shaders
+        objectsProgram = initShaders(webGLContext, "vs-objects", "fs-objects");
+        mirrorProgram = initShaders(webGLContext, "vs-mirror", "fs-mirror");
+
+        mapShaderLocations();
+        createGeometries();
+        createMirrorFramebuffer();
+
+        // Carregamento de Texturas
+        textureStoneCube = loadTexture("tex-cubo-pedra");
+        textureColoredCube = loadTexture("tex-cubo-colorido");
+        textureGlass = loadTexture("tex-vidro");
+
+        setupInputListeners();
+        setupSlider();
+
+        requestAnimationFrame(renderSceneLoop);
+    };
+
+    window.onresize = function() {
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+        webGLContext.viewport(0, 0, canvasElement.width, canvasElement.height);
+    };
+
+    /**
+     * Cria o Framebuffer para onde a cena refletida será desenhada.
+     */
+    function createMirrorFramebuffer() {
+        mirrorFramebuffer = webGLContext.createFramebuffer();
+        webGLContext.bindFramebuffer(webGLContext.FRAMEBUFFER, mirrorFramebuffer);
+
+        // Textura onde a cena será pintada
+        mirrorColorTexture = webGLContext.createTexture();
+        webGLContext.bindTexture(webGLContext.TEXTURE_2D, mirrorColorTexture);
+        webGLContext.texImage2D(webGLContext.TEXTURE_2D, 0, webGLContext.RGBA, MIRROR_TEXTURE_RESOLUTION, MIRROR_TEXTURE_RESOLUTION, 0, webGLContext.RGBA, webGLContext.UNSIGNED_BYTE, null);
+        webGLContext.texParameteri(webGLContext.TEXTURE_2D, webGLContext.TEXTURE_MIN_FILTER, webGLContext.LINEAR);
+        webGLContext.texParameteri(webGLContext.TEXTURE_2D, webGLContext.TEXTURE_MAG_FILTER, webGLContext.LINEAR);
+        webGLContext.texParameteri(webGLContext.TEXTURE_2D, webGLContext.TEXTURE_WRAP_S, webGLContext.CLAMP_TO_EDGE);
+        webGLContext.texParameteri(webGLContext.TEXTURE_2D, webGLContext.TEXTURE_WRAP_T, webGLContext.CLAMP_TO_EDGE);
+
+        webGLContext.framebufferTexture2D(webGLContext.FRAMEBUFFER, webGLContext.COLOR_ATTACHMENT0, webGLContext.TEXTURE_2D, mirrorColorTexture, 0);
+
+        // Buffer de profundidade necessário para o teste de profundidade durante a renderização do reflexo
+        mirrorDepthBuffer = webGLContext.createRenderbuffer();
+        webGLContext.bindRenderbuffer(webGLContext.RENDERBUFFER, mirrorDepthBuffer);
+        webGLContext.renderbufferStorage(webGLContext.RENDERBUFFER, webGLContext.DEPTH_COMPONENT16, MIRROR_TEXTURE_RESOLUTION, MIRROR_TEXTURE_RESOLUTION);
+        webGLContext.framebufferRenderbuffer(webGLContext.FRAMEBUFFER, webGLContext.DEPTH_ATTACHMENT, webGLContext.RENDERBUFFER, mirrorDepthBuffer);
+
+        webGLContext.bindFramebuffer(webGLContext.FRAMEBUFFER, null);
+    }
+
+    /**
+     * Mapeia as variáveis 'uniform' do GLSL para ponteiros em JavaScript.
+     */
+    function mapShaderLocations() {
+        webGLContext.useProgram(objectsProgram);
+        obj_uModelMatrixLoc = webGLContext.getUniformLocation(objectsProgram, "uModelMatrix");
+        obj_uViewMatrixLoc = webGLContext.getUniformLocation(objectsProgram, "uViewMatrix");
+        obj_uProjectionMatrixLoc = webGLContext.getUniformLocation(objectsProgram, "uProjectionMatrix");
+        obj_uCameraPosLoc = webGLContext.getUniformLocation(objectsProgram, "uCameraPosition");
+        obj_uMainTextureLoc = webGLContext.getUniformLocation(objectsProgram, "uMainTextureSampler");
+        obj_uLightPosLoc = webGLContext.getUniformLocation(objectsProgram, "uLightPosition");
+        obj_uAmbientLightLoc = webGLContext.getUniformLocation(objectsProgram, "uAmbientColor");
+        obj_uDiffuseLightLoc = webGLContext.getUniformLocation(objectsProgram, "uDiffuseColor");
+        obj_uSpecularLightLoc = webGLContext.getUniformLocation(objectsProgram, "uSpecularColor");
+        obj_uShininessLoc = webGLContext.getUniformLocation(objectsProgram, "uShininess");
+        obj_uUseClipLoc = webGLContext.getUniformLocation(objectsProgram, "uUseClipping");
+        obj_uClipPlaneLoc = webGLContext.getUniformLocation(objectsProgram, "uClipPlane");
+
+        webGLContext.useProgram(mirrorProgram);
+        mir_uModelMatrixLoc = webGLContext.getUniformLocation(mirrorProgram, "uModelMatrix");
+        mir_uViewMatrixLoc = webGLContext.getUniformLocation(mirrorProgram, "uViewMatrix");
+        mir_uProjectionMatrixLoc = webGLContext.getUniformLocation(mirrorProgram, "uProjectionMatrix");
+        mir_uCameraPosLoc = webGLContext.getUniformLocation(mirrorProgram, "uCameraPosition");
+        mir_uMainTextureLoc = webGLContext.getUniformLocation(mirrorProgram, "uMainTextureSampler");
+        mir_uMirrorTextureLoc = webGLContext.getUniformLocation(mirrorProgram, "uMirrorTextureSampler");
+        mir_uLightPosLoc = webGLContext.getUniformLocation(mirrorProgram, "uLightPosition");
+        mir_uSpecularLightLoc = webGLContext.getUniformLocation(mirrorProgram, "uSpecularColor");
+        mir_uTransparencyLoc = webGLContext.getUniformLocation(mirrorProgram, "uTransparencyLevel");
+        mir_uScreenResLoc = webGLContext.getUniformLocation(mirrorProgram, "uScreenResolution");
+    }
+
+    /**
+     * Cria textura a partir de um elemento <img> no HTML.
+     */
+    function loadTexture(elementId) {
+        let texture = webGLContext.createTexture();
+        webGLContext.bindTexture(webGLContext.TEXTURE_2D, texture);
+        // Textura temporária (1x1 azul) enquanto a imagem carrega
+        webGLContext.texImage2D(webGLContext.TEXTURE_2D, 0, webGLContext.RGBA, 1, 1, 0, webGLContext.RGBA, webGLContext.UNSIGNED_BYTE, new Uint8Array([200,200,255,255]));
+
+        let imageElement = document.getElementById(elementId);
+        let uploadCallback = () => {
+            webGLContext.bindTexture(webGLContext.TEXTURE_2D, texture);
+            webGLContext.texImage2D(webGLContext.TEXTURE_2D, 0, webGLContext.RGBA, webGLContext.RGBA, webGLContext.UNSIGNED_BYTE, imageElement);
+            webGLContext.generateMipmap(webGLContext.TEXTURE_2D);
+            webGLContext.texParameteri(webGLContext.TEXTURE_2D, webGLContext.TEXTURE_MIN_FILTER, webGLContext.LINEAR_MIPMAP_LINEAR);
+        };
+
+        if(imageElement.complete && imageElement.naturalWidth > 0) uploadCallback(); else imageElement.onload = uploadCallback;
+        return texture;
+    }
+
+    /**
+     * Define os dados de vértices, normais e UVs para os modelos.
+     */
+    function createGeometries() {
+        // Vértices do Cubo (6 faces * 2 triângulos * 3 pontos)
+        let cubeVertices = [
+            vec4(-0.5,-0.5,0.5,1), vec4(0.5,-0.5,0.5,1), vec4(0.5,0.5,0.5,1), vec4(-0.5,-0.5,0.5,1), vec4(0.5,0.5,0.5,1), vec4(-0.5,0.5,0.5,1),
+            vec4(-0.5,-0.5,-0.5,1), vec4(-0.5,0.5,-0.5,1), vec4(0.5,0.5,-0.5,1), vec4(-0.5,-0.5,-0.5,1), vec4(0.5,0.5,-0.5,1), vec4(0.5,-0.5,-0.5,1),
+            vec4(-0.5,0.5,-0.5,1), vec4(-0.5,0.5,0.5,1), vec4(0.5,0.5,0.5,1), vec4(-0.5,0.5,-0.5,1), vec4(0.5,0.5,0.5,1), vec4(0.5,0.5,-0.5,1),
+            vec4(-0.5,-0.5,-0.5,1), vec4(0.5,-0.5,-0.5,1), vec4(0.5,-0.5,0.5,1), vec4(-0.5,-0.5,-0.5,1), vec4(0.5,-0.5,0.5,1), vec4(-0.5,-0.5,0.5,1),
+            vec4(0.5,-0.5,-0.5,1), vec4(0.5,0.5,-0.5,1), vec4(0.5,0.5,0.5,1), vec4(0.5,-0.5,-0.5,1), vec4(0.5,0.5,0.5,1), vec4(0.5,-0.5,0.5,1),
+            vec4(-0.5,-0.5,-0.5,1), vec4(-0.5,-0.5,0.5,1), vec4(-0.5,0.5,0.5,1), vec4(-0.5,-0.5,-0.5,1), vec4(-0.5,0.5,0.5,1), vec4(-0.5,0.5,-0.5,1)
+        ];
+        let cubeNormals = [
+            vec3(0,0,1),vec3(0,0,1),vec3(0,0,1),vec3(0,0,1),vec3(0,0,1),vec3(0,0,1),
+            vec3(0,0,-1),vec3(0,0,-1),vec3(0,0,-1),vec3(0,0,-1),vec3(0,0,-1),vec3(0,0,-1),
+            vec3(0,1,0),vec3(0,1,0),vec3(0,1,0),vec3(0,1,0),vec3(0,1,0),vec3(0,1,0),
+            vec3(0,-1,0),vec3(0,-1,0),vec3(0,-1,0),vec3(0,-1,0),vec3(0,-1,0),vec3(0,-1,0),
+            vec3(1,0,0),vec3(1,0,0),vec3(1,0,0),vec3(1,0,0),vec3(1,0,0),vec3(1,0,0),
+            vec3(-1,0,0),vec3(-1,0,0),vec3(-1,0,0),vec3(-1,0,0),vec3(-1,0,0),vec3(-1,0,0)
+        ];
+        let cubeUVs = [
+            // Face 1: Frente (Z+)
+            vec2(0, 0), vec2(1, 0), vec2(1, 1),
+            vec2(0, 0), vec2(1, 1), vec2(0, 1),
+
+            // Face 2: Trás (Z-)
+            vec2(1, 0), vec2(1, 1), vec2(0, 1),
+            vec2(1, 0), vec2(0, 1), vec2(0, 0),
+
+            // Face 3: Topo (Y+)
+            vec2(0, 1), vec2(0, 0), vec2(1, 0),
+            vec2(0, 1), vec2(1, 0), vec2(1, 1),
+
+            // Face 4: Baixo (Y-)
+            vec2(0, 0), vec2(0, 1), vec2(1, 1),
+            vec2(0, 0), vec2(1, 1), vec2(1, 0),
+
+            // Face 5: Direita (X+)
+            // Alinhando a altura da textura com a altura do cubo
+            vec2(1, 0), vec2(1, 1), vec2(0, 1),
+            vec2(1, 0), vec2(0, 1), vec2(0, 0),
+
+            // Face 6: Esquerda (X-)
+            vec2(0, 0), vec2(1, 0), vec2(1, 1),
+            vec2(0, 0), vec2(1, 1), vec2(0, 1)
+        ];
+
+
+        cubeGeometryInfo = createBufferInfo(cubeVertices, cubeNormals, cubeUVs, objectsProgram);
+
+        // --- Geometria Plano (Vidro/Espelho) ---
+        let planeVertices = [ vec4(-10,-6,0,1), vec4(10,-6,0,1), vec4(10,6,0,1), vec4(-10,-6,0,1), vec4(10,6,0,1), vec4(-10,6,0,1) ];
+        let planeNormals = [ vec3(0,0,1), vec3(0,0,1), vec3(0,0,1), vec3(0,0,1), vec3(0,0,1), vec3(0,0,1) ];
+        let planeUVs = [ vec2(0,0), vec2(1,0), vec2(1,1), vec2(0,0), vec2(1,1), vec2(0,1) ];
+
+        glassPlaneGeometryInfo = createBufferInfo(planeVertices, planeNormals, planeUVs, mirrorProgram);
+    }
+
+    /**
+     * Abstração para criar VAOs e Buffers.
+     */
+    function createBufferInfo(positions, normals, uvs, targetProgram) {
+        let vao = webGLContext.createVertexArray();
+        webGLContext.bindVertexArray(vao);
+
+        let posBuffer = webGLContext.createBuffer();
+        webGLContext.bindBuffer(webGLContext.ARRAY_BUFFER, posBuffer);
+        webGLContext.bufferData(webGLContext.ARRAY_BUFFER, flatten(positions), webGLContext.STATIC_DRAW);
+        let posLoc = webGLContext.getAttribLocation(targetProgram, "aPosition");
+        webGLContext.vertexAttribPointer(posLoc, 4, webGLContext.FLOAT, false, 0, 0);
+        webGLContext.enableVertexAttribArray(posLoc);
+
+        let normBuffer = webGLContext.createBuffer();
+        webGLContext.bindBuffer(webGLContext.ARRAY_BUFFER, normBuffer);
+        webGLContext.bufferData(webGLContext.ARRAY_BUFFER, flatten(normals), webGLContext.STATIC_DRAW);
+        let normLoc = webGLContext.getAttribLocation(targetProgram, "aNormal");
+        webGLContext.vertexAttribPointer(normLoc, 3, webGLContext.FLOAT, false, 0, 0);
+        webGLContext.enableVertexAttribArray(normLoc);
+
+        let uvBuffer = webGLContext.createBuffer();
+        webGLContext.bindBuffer(webGLContext.ARRAY_BUFFER, uvBuffer);
+        webGLContext.bufferData(webGLContext.ARRAY_BUFFER, flatten(uvs), webGLContext.STATIC_DRAW);
+        let uvLoc = webGLContext.getAttribLocation(targetProgram, "aTexCoord");
+        webGLContext.vertexAttribPointer(uvLoc, 2, webGLContext.FLOAT, false, 0, 0);
+        webGLContext.enableVertexAttribArray(uvLoc);
+
+        webGLContext.bindVertexArray(null);
+        return { vao: vao, count: positions.length };
+    }
+
+    // Funções utilitárias matemáticas
+    function scaleVector(scalar, vector) { return vec3(vector[0]*scalar, vector[1]*scalar, vector[2]*scalar); }
+    function toRadians(degrees) { return degrees * Math.PI / 180.0; }
+
+    /**
+     * Reflete um ponto em relação a um plano (Matemática para o Espelho).
+     */
+    function reflectPointAcrossPlane(point, planeNormal, planePoint) {
+        let distance = dot(subtract(point, planePoint), planeNormal);
+        return subtract(point, scaleVector(2.0 * distance, planeNormal));
+    }
+
+    /**
+     * Reflete um vetor de direção em relação a uma normal.
+     */
+    function reflectDirectionAcrossPlane(direction, planeNormal) {
+        let dotProduct = dot(direction, planeNormal);
+        return subtract(direction, scaleVector(2.0 * dotProduct, planeNormal));
+    }
+
+    /**
+     * Captura teclado e movimento do mouse para controle da câmera.
+     */
+    function setupInputListeners() {
+        document.addEventListener('keydown', (e) => activeKeysState[e.code] = true);
+        document.addEventListener('keyup', (e) => activeKeysState[e.code] = false);
+
+        canvasElement.onclick = () => canvasElement.requestPointerLock();
+
+        document.addEventListener('mousemove', (e) => {
+            if (document.pointerLockElement === canvasElement) {
+                cameraControl.yaw += e.movementX * cameraControl.mouseSensitivity;
+                cameraControl.pitch -= e.movementY * cameraControl.mouseSensitivity;
+                if(cameraControl.pitch > 89) cameraControl.pitch = 89;
+                if(cameraControl.pitch < -89) cameraControl.pitch = -89;
+            }
+        });
+    }
+
+    function setupSlider() {
+        const slider = document.getElementById("alphaSlider");
+        const display = document.getElementById("valDisplay");
+        slider.addEventListener("input", function(e) {
+            currentTransparency = parseFloat(e.target.value);
+            display.innerText = Math.round(currentTransparency * 100) + "%";
+        });
+    }
+
+    /**
+     * Atualiza a posição do cubo móvel via setas do teclado.
+     */
+    function processCubeMovement(deltaTime) {
+        let speed = CUBE_MOVE_SPEED * deltaTime;
+        if (activeKeysState['ArrowUp']) movableCubePosition[2] -= speed;
+        if (activeKeysState['ArrowDown']) movableCubePosition[2] += speed;
+        if (activeKeysState['ArrowLeft']) movableCubePosition[0] -= speed;
+        if (activeKeysState['ArrowRight']) movableCubePosition[0] += speed;
+    }
+
+    /**
+     * Atualiza a posição da câmera FPS.
+     * [REQUISITO 6] Câmera Flyby (movimento livre)
+     */
+    function processCameraMovement(deltaTime) {
+        let frontDirection = normalize(vec3(
+            Math.cos(toRadians(cameraControl.yaw)) * Math.cos(toRadians(cameraControl.pitch)),
+            Math.sin(toRadians(cameraControl.pitch)),
+            Math.sin(toRadians(cameraControl.yaw)) * Math.cos(toRadians(cameraControl.pitch))
+        ));
+        let rightDirection = normalize(cross(frontDirection, vec3(0,1,0)));
+        let velocity = cameraControl.speed * deltaTime;
+
+        if (activeKeysState['KeyW']) cameraControl.pos = add(cameraControl.pos, scaleVector(velocity, frontDirection));
+        if (activeKeysState['KeyS']) cameraControl.pos = subtract(cameraControl.pos, scaleVector(velocity, frontDirection));
+        if (activeKeysState['KeyA']) cameraControl.pos = subtract(cameraControl.pos, scaleVector(velocity, rightDirection));
+        if (activeKeysState['KeyD']) cameraControl.pos = add(cameraControl.pos, scaleVector(velocity, rightDirection));
+        if (activeKeysState['KeyE']) cameraControl.pos = add(cameraControl.pos, scaleVector(velocity, vec3(0,1,0)));
+        if (activeKeysState['KeyQ']) cameraControl.pos = subtract(cameraControl.pos, scaleVector(velocity, vec3(0,1,0)));
+
+        return frontDirection;
+    }
+
+    /**
+     * Desenha os objetos da cena (Cubo colorido e cubo de pedra).
+     */
+    function drawSolidObjects(currentTime, useClipping) {
+        webGLContext.useProgram(objectsProgram);
+
+        // [REQUISITO 5] Passa a info de Clipping
+        webGLContext.uniform1i(obj_uUseClipLoc, useClipping ? 1 : 0);
+        // Plano de corte no Z=0 (onde está o espelho)
+        if (useClipping) webGLContext.uniform4f(obj_uClipPlaneLoc, 0.0, 0.0, 1.0, 0.0);
+
+        // [REQUISITO 5] Observe que não há "if" de seleção de objetos aqui.
+        // Renderizamos tudo e o shader descarta o que não deve aparecer (clipping).
+
+        // 1. Cubo Móvel (Textura colorida)
+        webGLContext.activeTexture(webGLContext.TEXTURE0);
+        webGLContext.bindTexture(webGLContext.TEXTURE_2D, textureColoredCube);
+        webGLContext.uniform1i(obj_uMainTextureLoc, 0);
+
+        let modelMatrix1 = mult(translate(movableCubePosition[0], movableCubePosition[1], movableCubePosition[2]), mult(rotateY(currentTime * 30), scale(2, 2, 2)));
+        webGLContext.uniformMatrix4fv(obj_uModelMatrixLoc, false, flatten(modelMatrix1));
+
+        webGLContext.bindVertexArray(cubeGeometryInfo.vao);
+        webGLContext.drawArrays(webGLContext.TRIANGLES, 0, cubeGeometryInfo.count);
+
+        // 2. Cubo de Pedra (Garrafa/Estático)
+        webGLContext.bindTexture(webGLContext.TEXTURE_2D, textureStoneCube);
+
+        let modelMatrix2 = mult(translate(0, 0, -10), mult(rotateX(currentTime * 10), scale(2, 2, 2)));
+        webGLContext.uniformMatrix4fv(obj_uModelMatrixLoc, false, flatten(modelMatrix2));
+
+        webGLContext.drawArrays(webGLContext.TRIANGLES, 0, cubeGeometryInfo.count);
+    }
+
+    /**
+     * Ciclo principal de renderização.
+     */
+    function renderSceneLoop(currentTimeMillis) {
+        let currentTimeSeconds = currentTimeMillis * 0.001;
+        let deltaTime = currentTimeSeconds - lastTimestamp;
+        lastTimestamp = currentTimeSeconds;
+
+        processCubeMovement(deltaTime);
+        let lookDirection = processCameraMovement(deltaTime);
+
+        // --- PASSO 1: Renderizar a cena do ponto de vista do espelho (Reflexo) ---
+        // [REQUISITO 2] Uso de Framebuffer para textura dinâmica (Render-to-Texture em passos)
+        webGLContext.bindFramebuffer(webGLContext.FRAMEBUFFER, mirrorFramebuffer);
+        webGLContext.viewport(0, 0, MIRROR_TEXTURE_RESOLUTION, MIRROR_TEXTURE_RESOLUTION);
+        webGLContext.clear(webGLContext.COLOR_BUFFER_BIT | webGLContext.DEPTH_BUFFER_BIT);
+
+        // Calcula a posição "espelhada" da câmera
+        let mirrorCamPos = reflectPointAcrossPlane(cameraControl.pos, vec3(0,0,1), vec3(0,0,MIRROR_Z_POSITION));
+        let mirrorFront = reflectDirectionAcrossPlane(lookDirection, vec3(0,0,1));
+
+        let viewMatrixReflect = lookAt(mirrorCamPos, add(mirrorCamPos, mirrorFront), vec3(0, 1, 0));
+        let projectionMatrix = perspective(60, canvasElement.width/canvasElement.height, 0.1, 1000.0);
+
+        webGLContext.useProgram(objectsProgram);
+        webGLContext.uniformMatrix4fv(obj_uViewMatrixLoc, false, flatten(viewMatrixReflect));
+        webGLContext.uniformMatrix4fv(obj_uProjectionMatrixLoc, false, flatten(projectionMatrix));
+        webGLContext.uniform3fv(obj_uCameraPosLoc, flatten(mirrorCamPos));
+
+        // Uniforms de iluminação para o reflexo
+        webGLContext.uniform3fv(obj_uLightPosLoc, flatten(lightSettings.pos));
+        webGLContext.uniform3fv(obj_uAmbientLightLoc, flatten(lightSettings.ambient));
+        webGLContext.uniform3fv(obj_uDiffuseLightLoc, flatten(lightSettings.diffuse));
+        webGLContext.uniform3fv(obj_uSpecularLightLoc, flatten(lightSettings.specular));
+        webGLContext.uniform1f(obj_uShininessLoc, lightSettings.shininess);
+
+        // Culling (Invertido para o reflexo)
+        webGLContext.enable(webGLContext.CULL_FACE);
+        webGLContext.frontFace(webGLContext.CW);
+
+        // [REQUISITO 5] Ativa o Clipping (true) para não desenhar objetos atrás do espelho
+        drawSolidObjects(currentTimeSeconds, true);
+
+        webGLContext.frontFace(webGLContext.CCW);
+        webGLContext.disable(webGLContext.CULL_FACE);
+
+        // --- PASSO 2: Renderizar Cena Real (Visão do Jogador) ---
+        webGLContext.bindFramebuffer(webGLContext.FRAMEBUFFER, null);
+        webGLContext.viewport(0, 0, canvasElement.width, canvasElement.height);
+        webGLContext.clear(webGLContext.COLOR_BUFFER_BIT | webGLContext.DEPTH_BUFFER_BIT);
+
+        let viewMatrixActual = lookAt(cameraControl.pos, add(cameraControl.pos, lookDirection), vec3(0,1,0));
+
+        webGLContext.useProgram(objectsProgram);
+        webGLContext.uniformMatrix4fv(obj_uViewMatrixLoc, false, flatten(viewMatrixActual));
+        webGLContext.uniformMatrix4fv(obj_uProjectionMatrixLoc, false, flatten(projectionMatrix));
+        webGLContext.uniform3fv(obj_uCameraPosLoc, flatten(cameraControl.pos));
+        drawSolidObjects(currentTimeSeconds, false);
+
+        // --- PASSO 3: Renderizar o Vidro/Espelho (Com transparência e reflexão) ---
+        webGLContext.useProgram(mirrorProgram);
+        webGLContext.uniformMatrix4fv(mir_uViewMatrixLoc, false, flatten(viewMatrixActual));
+        webGLContext.uniformMatrix4fv(mir_uProjectionMatrixLoc, false, flatten(projectionMatrix));
+        webGLContext.uniform3fv(mir_uCameraPosLoc, flatten(cameraControl.pos));
+        webGLContext.uniform3fv(mir_uLightPosLoc, flatten(lightSettings.pos));
+        webGLContext.uniform3fv(mir_uSpecularLightLoc, flatten(lightSettings.specular));
+        webGLContext.uniform1f(mir_uTransparencyLoc, currentTransparency);
+        webGLContext.uniform2f(mir_uScreenResLoc, canvasElement.width, canvasElement.height);
+
+        // Slot 0: Textura de vidro (sujeira)
+        webGLContext.activeTexture(webGLContext.TEXTURE0);
+        webGLContext.bindTexture(webGLContext.TEXTURE_2D, textureGlass);
+        webGLContext.uniform1i(mir_uMainTextureLoc, 0);
+
+        // Slot 1: Textura capturada no Passo 1 (Reflexo)
+        // [REQUISITO 2] Usa a textura gerada dinamicamente
+        webGLContext.activeTexture(webGLContext.TEXTURE1);
+        webGLContext.bindTexture(webGLContext.TEXTURE_2D, mirrorColorTexture);
+        webGLContext.uniform1i(mir_uMirrorTextureLoc, 1);
+
+        webGLContext.uniformMatrix4fv(mir_uModelMatrixLoc, false, flatten(translate(0, 0, MIRROR_Z_POSITION)));
+
+        // Desabilita escrita no depth buffer para garantir blend correto de transparência
+        webGLContext.depthMask(false);
+        webGLContext.bindVertexArray(glassPlaneGeometryInfo.vao);
+        webGLContext.drawArrays(webGLContext.TRIANGLES, 0, glassPlaneGeometryInfo.count);
+        webGLContext.depthMask(true);
+
+        requestAnimationFrame(renderSceneLoop);
+    }
+</script>
+</body>
+</html>
