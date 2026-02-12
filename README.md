@@ -2,14 +2,14 @@
 
 Este projeto implementa uma cena 3D interativa utilizando **WebGL 2.0** e **GLSL**, focada na simulação de superfícies reflexivas e translúcidas (como vidro ou espelho) sem o uso de *Cube Maps* ou texturas pré-renderizadas.
 
-## 🎯 Objetivo
+## Objetivo
 Desenvolver um efeito de reflexo e transparência em um plano. O *shader* simula um material translúcido com reflexo dinâmico, comportando-se como um vidro escuro ou espelho semitransparente, utilizando renderização em múltiplos passos (*Multipass Rendering*).
 
-## 🎮 Controles e Instruções
+## Controles e Instruções
 
 Abaixo estão listados os controles para interagir com a cena.
 
-### 📄 `reflexoTransparencia.html`
+### `reflexoTransparencia.html`
 Cena principal onde é possível mover um dos cubos para verificar a atualização do reflexo em tempo real.
 
 | Tecla / Ação | Função |
@@ -22,7 +22,7 @@ Cena principal onde é possível mover um dos cubos para verificar a atualizaç�
 | **Slider (Interface)** | Ajustar nível de transparência do vidro (0% a 100%) |
 
 ---
-## 🛠️ Implementação Técnica
+## Implementação Técnica
 
 O projeto foi desenvolvido atendendo rigorosamente aos seguintes requisitos:
 
